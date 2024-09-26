@@ -20,34 +20,11 @@ var (
 
 type ipGraphWithPolicyKind struct {
 	ipGraph
-	ipGraphDynamicGas
 }
 
 func (c *ipGraphWithPolicyKind) RequiredGas(input []byte) uint64 {
 	log.Info("ipGraphWithPolicyKind.RequiredGas", "input", input)
-	if len(input) < 4 {
-		return 0
-	}
-	selector := input[:4]
-	switch {
-	case bytes.Equal(selector, addParentIpSelector):
-		return c.ipGraphDynamicGas.RequiredGas(input)
-	case bytes.Equal(selector, hasParentIpSelector):
-		return c.ipGraphDynamicGas.RequiredGas(input)
-	case bytes.Equal(selector, getParentIpsSelector):
-		return c.ipGraphDynamicGas.RequiredGas(input)
-	case bytes.Equal(selector, getParentIpsCountSelector):
-		return c.ipGraphDynamicGas.RequiredGas(input)
-	case bytes.Equal(selector, getAncestorIpsSelector):
-		return c.ipGraphDynamicGas.RequiredGas(input)
-	case bytes.Equal(selector, getAncestorIpsCountSelector):
-		return c.ipGraphDynamicGas.RequiredGas(input)
-	case bytes.Equal(selector, hasAncestorIpsSelector):
-		return c.ipGraphDynamicGas.RequiredGas(input)
-	default:
-		log.Info("ipGraphWithPolicyKind.RequiredGas", "selector", selector, "Default")
-		return intrinsicGas
-	}
+	return uint64(1)
 }
 
 func (c *ipGraphWithPolicyKind) Run(evm *EVM, input []byte) ([]byte, error) {
