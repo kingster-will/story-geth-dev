@@ -19,6 +19,9 @@ const (
 )
 
 var (
+	royaltyPolicyKindLAP        = big.NewInt(0)
+	royaltyPolicyKindLRP        = big.NewInt(1)
+	ipGraphAddress              = common.HexToAddress("0x000000000000000000000000000000000000001A")
 	aclAddress                  = common.HexToAddress("0x680E66e4c7Df9133a7AFC1ed091089B32b89C4ae")
 	aclSlot                     = "af99b37fdaacca72ee7240cb1435cc9e498aee6ef4edc19c8cc0cd787f4e6800"
 	addParentIpSelector         = crypto.Keccak256Hash([]byte("addParentIp(address,address[])")).Bytes()[:4]
@@ -28,9 +31,9 @@ var (
 	getAncestorIpsSelector      = crypto.Keccak256Hash([]byte("getAncestorIps(address)")).Bytes()[:4]
 	getAncestorIpsCountSelector = crypto.Keccak256Hash([]byte("getAncestorIpsCount(address)")).Bytes()[:4]
 	hasAncestorIpsSelector      = crypto.Keccak256Hash([]byte("hasAncestorIp(address,address)")).Bytes()[:4]
-	setRoyaltySelector          = crypto.Keccak256Hash([]byte("setRoyalty(address,address,uint256)")).Bytes()[:4]
-	getRoyaltySelector          = crypto.Keccak256Hash([]byte("getRoyalty(address,address)")).Bytes()[:4]
-	getRoyaltyStackSelector     = crypto.Keccak256Hash([]byte("getRoyaltyStack(address)")).Bytes()[:4]
+	setRoyaltySelector          = crypto.Keccak256Hash([]byte("setRoyalty(address,address,uint256,uint256)")).Bytes()[:4]
+	getRoyaltySelector          = crypto.Keccak256Hash([]byte("getRoyalty(address,address,uint256)")).Bytes()[:4]
+	getRoyaltyStackSelector     = crypto.Keccak256Hash([]byte("getRoyaltyStack(address,uint256)")).Bytes()[:4]
 )
 
 type ipGraph struct{}
@@ -60,16 +63,29 @@ func (c *ipGraph) RequiredGas(input []byte) uint64 {
 	case bytes.Equal(selector, setRoyaltySelector):
 		return ipGraphWriteGas
 	case bytes.Equal(selector, getRoyaltySelector):
-		return ipGraphReadGas * averageAncestorIpCount * 2
+		royaltyPolicyKind := new(big.Int).SetBytes(getData(input, 64, 32))
+		if royaltyPolicyKind.Cmp(royaltyPolicyKindLAP) == 0 {
+			return ipGraphReadGas * (averageAncestorIpCount * 3)
+		} else if royaltyPolicyKind.Cmp(royaltyPolicyKindLRP) == 0 {
+			return ipGraphReadGas * (averageAncestorIpCount*2 + 2)
+		} else {
+			return intrinsicGas
+		}
 	case bytes.Equal(selector, getRoyaltyStackSelector):
-		return ipGraphReadGas * averageAncestorIpCount * 2
+		royaltyPolicyKind := new(big.Int).SetBytes(getData(input, 32, 32))
+		if royaltyPolicyKind.Cmp(royaltyPolicyKindLAP) == 0 {
+			return ipGraphReadGas * (averageParentIpCount + 1)
+		} else if royaltyPolicyKind.Cmp(royaltyPolicyKindLRP) == 0 {
+			return ipGraphReadGas * (averageAncestorIpCount * 2)
+		} else {
+			return intrinsicGas
+		}
 	default:
 		return intrinsicGas
 	}
 }
 
 func (c *ipGraph) Run(evm *EVM, input []byte) ([]byte, error) {
-	ipGraphAddress := common.HexToAddress("0x000000000000000000000000000000000000001A")
 	log.Info("ipGraph.Run", "ipGraphAddress", ipGraphAddress, "input", input)
 
 	if len(input) < 4 {

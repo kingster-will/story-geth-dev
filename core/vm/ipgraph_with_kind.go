@@ -11,11 +11,11 @@ import (
 )
 
 var (
-	royaltyPolicyKindLAP            = big.NewInt(0)
-	royaltyPolicyKindLRP            = big.NewInt(1)
-	setRoyaltyWithKindSelector      = crypto.Keccak256Hash([]byte("setRoyalty(address,address,uint256,uint256)")).Bytes()[:4]
-	getRoyaltyWithKindSelector      = crypto.Keccak256Hash([]byte("getRoyalty(address,address,uint256)")).Bytes()[:4]
-	getRoyaltyStackWithKindSelector = crypto.Keccak256Hash([]byte("getRoyaltyStack(address,uint256)")).Bytes()[:4]
+// royaltyPolicyKindLAP            = big.NewInt(0)
+// royaltyPolicyKindLRP            = big.NewInt(1)
+// setRoyaltyWithKindSelector      = crypto.Keccak256Hash([]byte("setRoyalty(address,address,uint256,uint256)")).Bytes()[:4]
+// getRoyaltyWithKindSelector      = crypto.Keccak256Hash([]byte("getRoyalty(address,address,uint256)")).Bytes()[:4]
+// getRoyaltyStackWithKindSelector = crypto.Keccak256Hash([]byte("getRoyaltyStack(address,uint256)")).Bytes()[:4]
 )
 
 type ipGraphWithPolicyKind struct {
@@ -44,28 +44,6 @@ func (c *ipGraphWithPolicyKind) RequiredGas(input []byte) uint64 {
 		return c.ipGraphDynamicGas.RequiredGas(input)
 	case bytes.Equal(selector, hasAncestorIpsSelector):
 		return c.ipGraphDynamicGas.RequiredGas(input)
-	case bytes.Equal(selector, setRoyaltyWithKindSelector):
-		return ipGraphWriteGas
-	case bytes.Equal(selector, getRoyaltyWithKindSelector):
-		log.Info("getRoyaltyWithKindSelector")
-		royaltyPolicyKind := new(big.Int).SetBytes(getData(input, 64, 32))
-		if royaltyPolicyKind.Cmp(royaltyPolicyKindLAP) == 0 {
-			return ipGraphReadGas * (averageAncestorIpCount * 3)
-		} else if royaltyPolicyKind.Cmp(royaltyPolicyKindLRP) == 0 {
-			return ipGraphReadGas * (averageAncestorIpCount*2 + 2)
-		} else {
-			return intrinsicGas
-		}
-	case bytes.Equal(selector, getRoyaltyStackWithKindSelector):
-		log.Info("getRoyaltyStackWithKindSelector")
-		royaltyPolicyKind := new(big.Int).SetBytes(getData(input, 32, 32))
-		if royaltyPolicyKind.Cmp(royaltyPolicyKindLAP) == 0 {
-			return ipGraphReadGas * (averageParentIpCount + 1)
-		} else if royaltyPolicyKind.Cmp(royaltyPolicyKindLRP) == 0 {
-			return ipGraphReadGas * (averageAncestorIpCount * 2)
-		} else {
-			return intrinsicGas
-		}
 	default:
 		log.Info("ipGraphWithPolicyKind.RequiredGas", "selector", selector, "Default")
 		return intrinsicGas
@@ -98,15 +76,6 @@ func (c *ipGraphWithPolicyKind) Run(evm *EVM, input []byte) ([]byte, error) {
 		return c.ipGraph.getAncestorIpsCount(args, evm, ipGraphAddress)
 	case bytes.Equal(selector, hasAncestorIpsSelector):
 		return c.ipGraph.hasAncestorIp(args, evm, ipGraphAddress)
-	case bytes.Equal(selector, setRoyaltyWithKindSelector):
-		log.Info("ipGraph.Run.setRoyaltyWithKindSelector")
-		return c.setRoyaltyWithKind(args, evm, ipGraphAddress)
-	case bytes.Equal(selector, getRoyaltyWithKindSelector):
-		log.Info("ipGraph.Run.getRoyaltyWithKindSelector")
-		return c.getRoyaltyWithKind(args, evm, ipGraphAddress)
-	case bytes.Equal(selector, getRoyaltyStackWithKindSelector):
-		log.Info("ipGraph.Run.getRoyaltyStackWithKindSelector")
-		return c.getRoyaltyStackWithKind(args, evm, ipGraphAddress)
 	default:
 		log.Info("ipGraph.Run.Default")
 		return nil, fmt.Errorf("unknown selector")
