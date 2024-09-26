@@ -21,7 +21,7 @@ const (
 var (
 	royaltyPolicyKindLAP        = big.NewInt(0)
 	royaltyPolicyKindLRP        = big.NewInt(1)
-	ipGraphAddress              = common.HexToAddress("0x000000000000000000000000000000000000001A")
+	ipGraphAddress              = common.HexToAddress("0x0000000000000000000000000000000000000101")
 	aclAddress                  = common.HexToAddress("0x680E66e4c7Df9133a7AFC1ed091089B32b89C4ae")
 	aclSlot                     = "af99b37fdaacca72ee7240cb1435cc9e498aee6ef4edc19c8cc0cd787f4e6800"
 	addParentIpSelector         = crypto.Keccak256Hash([]byte("addParentIp(address,address[])")).Bytes()[:4]
@@ -334,7 +334,7 @@ func (c *ipGraph) setRoyalty(input []byte, evm *EVM, ipGraphAddress common.Addre
 	royaltyPolicyKind := new(big.Int).SetBytes(getData(input, 64, 32))
 	royalty := new(big.Int).SetBytes(getData(input, 96, 32))
 	slot := crypto.Keccak256Hash(ipId.Bytes(), parentIpId.Bytes(), royaltyPolicyKind.Bytes()).Big()
-	log.Info("setRoyalty", "ipId", "ipGraphAddress", ipGraphAddress, ipId, "parentIpId", parentIpId,
+	log.Info("setRoyalty", "ipId", ipId, "ipGraphAddress", ipGraphAddress, "parentIpId", parentIpId,
 		"royaltyPolicyKind", royaltyPolicyKind, "royalty", royalty, "slot", slot)
 	evm.StateDB.SetState(ipGraphAddress, common.BigToHash(slot), common.BigToHash(royalty))
 
@@ -342,26 +342,41 @@ func (c *ipGraph) setRoyalty(input []byte, evm *EVM, ipGraphAddress common.Addre
 }
 
 func (c *ipGraph) getRoyalty(input []byte, evm *EVM, ipGraphAddress common.Address) ([]byte, error) {
-	log.Info("getRoyalty", "input", input)
+	log.Info("getRoyalty", "ipGraphAddress", ipGraphAddress, "input", input)
 	if len(input) < 64 {
 		return nil, fmt.Errorf("input too short for getRoyalty")
 	}
 	ipId := common.BytesToAddress(input[0:32])
 	ancestorIpId := common.BytesToAddress(input[32:64])
-	ancestors := c.findAncestors(ipId, evm, ipGraphAddress)
+	royaltyPolicyKind := new(big.Int).SetBytes(getData(input, 64, 32))
 	totalRoyalty := big.NewInt(0)
-	for ancestor := range ancestors {
-		if ancestor == ancestorIpId {
-			// Traverse the graph to accumulate royalties
-			totalRoyalty.Add(totalRoyalty, c.getRoyaltyForAncestor(ipId, ancestorIpId, evm, ipGraphAddress))
-		}
+	if royaltyPolicyKind.Cmp(royaltyPolicyKindLAP) == 0 {
+		totalRoyalty = c.getRoyaltyLap(ipId, ancestorIpId, evm, ipGraphAddress)
+	} else if royaltyPolicyKind.Cmp(royaltyPolicyKindLRP) == 0 {
+		totalRoyalty = c.getRoyaltyLrp(ipId, ancestorIpId, evm, ipGraphAddress)
+	} else {
+		return nil, fmt.Errorf("unknown royalty policy kind")
 	}
 
-	log.Info("getRoyalty", "ipId", ipId, "ancestorIpId", ancestorIpId, "totalRoyalty", totalRoyalty)
+	log.Info("getRoyalty", "ipId", ipId, "ancestorIpId", ancestorIpId, "ipGraphAddress", ipGraphAddress, "royaltyPolicyKind", royaltyPolicyKind, "totalRoyalty", totalRoyalty)
 	return common.BigToHash(totalRoyalty).Bytes(), nil
 }
 
-func (c *ipGraph) getRoyaltyForAncestor(ipId, ancestorIpId common.Address, evm *EVM, ipGraphAddress common.Address) *big.Int {
+func (c *ipGraph) getRoyaltyLap(ipId, ancestorIpId common.Address, evm *EVM, ipGraphAddress common.Address) *big.Int {
+	log.Info("getRoyaltyLap", "ipId", ipId, "ancestorIpId", ancestorIpId, "ipGraphAddress", ipGraphAddress)
+	ancestors := c.findAncestors(ipId, evm, ipGraphAddress)
+	totalRoyalty := big.NewInt(0)
+	for ancestor := range ancestors {
+		log.Info("getRoyaltyLap", "found_ancestor", ancestor)
+		if ancestor == ancestorIpId {
+			// Traverse the graph to accumulate royalties
+			totalRoyalty.Add(totalRoyalty, c.getRoyaltyLapForAncestor(ipId, ancestorIpId, evm, ipGraphAddress))
+		}
+	}
+	return totalRoyalty
+}
+
+func (c *ipGraph) getRoyaltyLapForAncestor(ipId, ancestorIpId common.Address, evm *EVM, ipGraphAddress common.Address) *big.Int {
 	ancestors := make(map[common.Address]struct{})
 	totalRoyalty := big.NewInt(0)
 	var stack []common.Address
@@ -385,13 +400,124 @@ func (c *ipGraph) getRoyaltyForAncestor(ipId, ancestorIpId common.Address, evm *
 			}
 
 			if parentIpId == ancestorIpId {
-				royaltySlot := crypto.Keccak256Hash(node.Bytes(), ancestorIpId.Bytes()).Big()
+				royaltySlot := crypto.Keccak256Hash(node.Bytes(), ancestorIpId.Bytes(), royaltyPolicyKindLAP.Bytes()).Big()
 				royalty := evm.StateDB.GetState(ipGraphAddress, common.BigToHash(royaltySlot)).Big()
 				totalRoyalty.Add(totalRoyalty, royalty)
 			}
 		}
 	}
 	return totalRoyalty
+}
+
+func (c *ipGraph) getRoyaltyLrp(ipId, ancestorIpId common.Address, evm *EVM, ipGraphAddress common.Address) *big.Int {
+	hundredPercent := big.NewInt(100000000) // 100% in the integer format
+
+	royalty := make(map[common.Address]*big.Int)
+	royalty[ipId] = hundredPercent
+
+	topoOrder, allParents, err := c.topologicalSort(ipId, ancestorIpId, evm, ipGraphAddress)
+	if err != nil {
+		log.Error("Failed to perform topological sort", "error", err)
+		return big.NewInt(0) // Return 0 if any error occurs
+	}
+	log.Info("getRoyaltyLrp", "topoOrder", topoOrder, "allParents", allParents)
+
+	for i := len(topoOrder) - 1; i >= 0; i-- {
+		node := topoOrder[i]
+		log.Info("getRoyaltyLrp", "Processing node", node)
+		// If we reached the ancestor IP, we can stop the calculation
+		if node == ancestorIpId {
+			log.Info("getRoyaltyLrp", "msg", "Ancestor IP reached, stopping royalty calculation", "ancestorIpId", ancestorIpId)
+			break
+		}
+
+		currentRoyalty, exists := royalty[node]
+		if !exists || currentRoyalty.Sign() == 0 {
+			log.Info("getRoyaltyLrp", "msg", "Skipping node with no royalty", "node", node)
+			continue // Skip if there's no royalty to distribute
+		}
+
+		parents := allParents[node]
+		log.Info("getRoyaltyLrp", "parents", parents)
+		for _, parentIpId := range parents {
+			royaltySlot := crypto.Keccak256Hash(node.Bytes(), parentIpId.Bytes(), royaltyPolicyKindLRP.Bytes()).Big()
+			royaltyHash := common.BigToHash(royaltySlot)
+			parentRoyalty := evm.StateDB.GetState(ipGraphAddress, royaltyHash).Big()
+			log.Info("getRoyaltyLrp", "parentIpId", parentIpId, "parentRoyalty", parentRoyalty)
+
+			contribution := new(big.Int).Div(new(big.Int).Mul(currentRoyalty, parentRoyalty), hundredPercent)
+			log.Info("getRoyaltyLrp", "contribution", contribution)
+
+			if existingRoyalty, exists := royalty[parentIpId]; exists {
+				royalty[parentIpId] = new(big.Int).Add(existingRoyalty, contribution)
+				log.Info("getRoyaltyLrp", "msg", "Updated existing royalty", "parentIpId", parentIpId, "royalty", royalty[parentIpId])
+			} else {
+				royalty[parentIpId] = contribution
+				log.Info("getRoyaltyLrp", "msg", "Added new royalty", "parentIpId", parentIpId, "royalty", royalty[parentIpId])
+			}
+		}
+	}
+
+	if result, exists := royalty[ancestorIpId]; exists {
+		log.Info("getRoyaltyLrp", "msg", "Royalty for ancestor IP", "ancestorIpId", ancestorIpId, "royalty", result)
+		return result
+	}
+	log.Info("getRoyaltyLrp", "msg", "Royalty for ancestor IP not found", "ancestorIpId", ancestorIpId)
+	return big.NewInt(0)
+}
+
+func (c *ipGraph) topologicalSort(ipId, ancestorIpId common.Address, evm *EVM, ipGraphAddress common.Address) (
+	[]common.Address, map[common.Address][]common.Address, error) {
+
+	allParents := make(map[common.Address][]common.Address)
+	visited := make(map[common.Address]bool)
+	topoOrder := []common.Address{}
+	stack := []common.Address{ipId}
+
+	for len(stack) > 0 {
+		log.Info("topologicalSort", "stack", stack)
+		current := stack[len(stack)-1]
+		stack = stack[:len(stack)-1] // pop from stack
+
+		log.Info("topologicalSort", "pop current", current)
+		log.Info("topologicalSort", "after pop stack", stack)
+		log.Info("topologicalSort", "visited", visited)
+		log.Info("topologicalSort", "topoOrder", topoOrder)
+
+		if visited[current] {
+			log.Info("topologicalSort", "msg", "current node already visited", "current", current)
+			log.Info("topologicalSort", "msg", "adding to topoOrder", "current", current)
+			topoOrder = append(topoOrder, current)
+			log.Info("topologicalSort", "topoOrder", topoOrder)
+			log.Info("topologicalSort", "msg", "Skipping visited node", "current", current)
+			continue
+		}
+		visited[current] = true
+		log.Info("topologicalSort", "visited", visited)
+		stack = append(stack, current)
+		log.Info("topologicalSort", "stack", stack)
+
+		currentLengthHash := evm.StateDB.GetState(ipGraphAddress, common.BytesToHash(current.Bytes()))
+		currentLength := currentLengthHash.Big()
+		log.Info("topologicalSort", "parentsLength", currentLength)
+		for i := uint64(0); i < currentLength.Uint64(); i++ {
+			slot := crypto.Keccak256Hash(current.Bytes()).Big()
+			slot.Add(slot, new(big.Int).SetUint64(i))
+			parentIpIdBytes := evm.StateDB.GetState(ipGraphAddress, common.BigToHash(slot)).Bytes()
+			parentIpId := common.BytesToAddress(parentIpIdBytes)
+			allParents[current] = append(allParents[current], parentIpId)
+
+			if !visited[parentIpId] {
+				log.Info("topologicalSort", "msg", "Adding parent to stack", "parentIpId", parentIpId)
+				stack = append(stack, parentIpId)
+			}
+		}
+	}
+	if !visited[ancestorIpId] {
+		log.Info("Ancestor IP is not ancestor of child IP", "ancestorIpId", ancestorIpId, "childIpId", ipId)
+		return []common.Address{}, map[common.Address][]common.Address{}, nil
+	}
+	return topoOrder, allParents, nil
 }
 
 func (c *ipGraph) getRoyaltyStack(input []byte, evm *EVM, ipGraphAddress common.Address) ([]byte, error) {
