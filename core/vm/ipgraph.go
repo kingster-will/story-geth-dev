@@ -325,15 +325,17 @@ func (c *ipGraph) setRoyalty(input []byte, evm *EVM, ipGraphAddress common.Addre
 		return nil, fmt.Errorf("caller not allowed to set Royalty")
 	}
 
-	log.Info("setRoyalty", "input", input)
+	log.Info("setRoyalty", "ipGraphAddress", ipGraphAddress, "input", input)
 	if len(input) < 96 {
 		return nil, fmt.Errorf("input too short for setRoyalty")
 	}
 	ipId := common.BytesToAddress(input[0:32])
 	parentIpId := common.BytesToAddress(input[32:64])
-	royalty := new(big.Int).SetBytes(getData(input, 64, 32))
-	slot := crypto.Keccak256Hash(ipId.Bytes(), parentIpId.Bytes()).Big()
-	log.Info("setRoyalty", "ipId", ipId, "parentIpId", parentIpId, "royalty", royalty, "slot", slot)
+	royaltyPolicyKind := new(big.Int).SetBytes(getData(input, 64, 32))
+	royalty := new(big.Int).SetBytes(getData(input, 96, 32))
+	slot := crypto.Keccak256Hash(ipId.Bytes(), parentIpId.Bytes(), royaltyPolicyKind.Bytes()).Big()
+	log.Info("setRoyalty", "ipId", "ipGraphAddress", ipGraphAddress, ipId, "parentIpId", parentIpId,
+		"royaltyPolicyKind", royaltyPolicyKind, "royalty", royalty, "slot", slot)
 	evm.StateDB.SetState(ipGraphAddress, common.BigToHash(slot), common.BigToHash(royalty))
 
 	return nil, nil
@@ -393,11 +395,26 @@ func (c *ipGraph) getRoyaltyForAncestor(ipId, ancestorIpId common.Address, evm *
 }
 
 func (c *ipGraph) getRoyaltyStack(input []byte, evm *EVM, ipGraphAddress common.Address) ([]byte, error) {
-	log.Info("getRoyaltyStack", "input", input)
+	log.Info("getRoyaltyStack", "ipGraphAddress", ipGraphAddress, "input", input)
+	totalRoyalty := big.NewInt(0)
 	if len(input) < 32 {
 		return nil, fmt.Errorf("input too short for getRoyaltyStack")
 	}
 	ipId := common.BytesToAddress(input[0:32])
+	royaltyPolicyKind := new(big.Int).SetBytes(getData(input, 32, 32))
+	if royaltyPolicyKind.Cmp(royaltyPolicyKindLAP) == 0 {
+		totalRoyalty = c.getRoyaltyStackLap(ipId, evm, ipGraphAddress)
+	} else if royaltyPolicyKind.Cmp(royaltyPolicyKindLRP) == 0 {
+		totalRoyalty = c.getRoyaltyStackLrp(ipId, evm, ipGraphAddress)
+	} else {
+		return nil, fmt.Errorf("unknown royalty policy kind")
+	}
+	log.Info("getRoyaltyStack", "ipId", ipId, "ipGraphAddress", ipGraphAddress, "royaltyPolicyKind", royaltyPolicyKind, "totalRoyalty", totalRoyalty)
+	return common.BigToHash(totalRoyalty).Bytes(), nil
+}
+
+func (c *ipGraph) getRoyaltyStackLap(ipId common.Address, evm *EVM, ipGraphAddress common.Address) *big.Int {
+	log.Info("getRoyaltyStackLap", "ipGraphAddress", ipGraphAddress, "IP ID", ipId)
 	ancestors := make(map[common.Address]struct{})
 	totalRoyalty := big.NewInt(0)
 	var stack []common.Address
@@ -420,12 +437,30 @@ func (c *ipGraph) getRoyaltyStack(input []byte, evm *EVM, ipGraphAddress common.
 				stack = append(stack, parentIpId)
 			}
 
-			royaltySlot := crypto.Keccak256Hash(node.Bytes(), parentIpId.Bytes()).Big()
+			royaltySlot := crypto.Keccak256Hash(node.Bytes(), parentIpId.Bytes(), royaltyPolicyKindLAP.Bytes()).Big()
 			royalty := evm.StateDB.GetState(ipGraphAddress, common.BigToHash(royaltySlot)).Big()
 			totalRoyalty.Add(totalRoyalty, royalty)
 		}
 	}
-	return common.BigToHash(totalRoyalty).Bytes(), nil
+	return totalRoyalty
+}
+
+func (c *ipGraph) getRoyaltyStackLrp(ipId common.Address, evm *EVM, ipGraphAddress common.Address) *big.Int {
+	log.Info("getRoyaltyStackLrp", "ipGraphAddress", ipGraphAddress, "IP ID", ipId)
+	totalRoyalty := big.NewInt(0)
+	currentLengthHash := evm.StateDB.GetState(ipGraphAddress, common.BytesToHash(ipId.Bytes()))
+	currentLength := currentLengthHash.Big()
+
+	for i := uint64(0); i < currentLength.Uint64(); i++ {
+		slot := crypto.Keccak256Hash(ipId.Bytes()).Big()
+		slot.Add(slot, new(big.Int).SetUint64(i))
+		storedParent := evm.StateDB.GetState(ipGraphAddress, common.BigToHash(slot))
+		parentIpId := common.BytesToAddress(storedParent.Bytes())
+		royaltySlot := crypto.Keccak256Hash(ipId.Bytes(), parentIpId.Bytes(), royaltyPolicyKindLRP.Bytes()).Big()
+		royalty := evm.StateDB.GetState(ipGraphAddress, common.BigToHash(royaltySlot)).Big()
+		totalRoyalty.Add(totalRoyalty, royalty)
+	}
+	return totalRoyalty
 }
 
 type ipGraphDynamicGas struct {
